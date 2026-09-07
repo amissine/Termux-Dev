@@ -64,6 +64,8 @@ export class Agent {
   async *run(signal?: AbortSignal): AsyncGenerator<AgentEvent, void, unknown> {
     let iterations = 0;
 
+    console.trace('Agent.run this', this, 'arguments', arguments)
+
     while (iterations < this.config.maxIterations) {
       if (signal?.aborted) {
         return;
@@ -142,6 +144,8 @@ export class Agent {
             yield { type: 'reconnected', attempt };
             continue;
           }
+
+          console.trace('isNetwork', isNetwork)
 
           const errMsg = isNetwork
             ? `Ошибка сети: Не удалось восстановить интернет-соединение после ${attempt} попыток (${err.message}).`
