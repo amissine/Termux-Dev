@@ -1,0 +1,83 @@
+ ▐▛███▛█   Claude Code v2.1.263
+▝▜██████▀  Sonnet 5 · Claude Pro
+  ▝▝ ▝▝    ~/Termux-Dev
+
+
+❯ I like reading code and want to read this codebase, suggest a path to         
+  proceed.                                                                      
+
+  Searched for 1 pattern, read 3 files, listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● This is termux-dev (devx) — a terminal-native AI coding agent, ~10k lines of
+  TypeScript, cleanly layered. Here's a reading path that follows the data flow
+  rather than the file tree.
+
+  Orientation (read first)
+
+  1. README.md — you've got the feature list; skim it for vocabulary (PLAN vs
+     AGENT mode, snapshots, memory bank, /serve).
+  2. src/core/types.ts (118 lines) — the whole domain model in one file.
+     Message, Tool, LLMProvider, AgentConfig, and the two event unions
+     LLMStreamChunk / AgentEvent. Everything else plugs into these interfaces.
+     Read it twice.
+
+  The engine (the core loop)
+
+  3. src/core/loop.ts (251) — Agent.run(), an async generator. This is the app:
+     prune context → call provider (streaming, with retry/backoff) → append
+     assistant message → execute each tool call (validate → permission check →
+     execute) → append tool results → repeat until no tool calls or
+     maxIterations. Small enough to hold in your head.
+  4. src/core/history.ts (169) — message store + pruneToLimit compaction that
+     loop.ts calls.
+  5. src/permissions/guard.ts (193) — check() / askUser(); the gate between the
+     model and your filesystem. Bash allowlist, trusted-projects logic.
+  6. src/core/network.ts (148) — the retryable-error classification behind the
+     reconnect logic in the loop.
+
+  Provider layer (model I/O)
+
+  7. src/providers/index.ts (10 lines) — trivial factory. Note: everything is
+     OpenAI-compatible; "universal provider support" = different base URLs.
+  8. src/providers/openai.ts (424) — chatStream(): SSE parsing, assembling
+     streamed tool-call deltas, token/cost accounting. The most intricate single
+     file; read it after the loop so you know what it's feeding.
+
+  Tools (what the agent can do)
+
+  9. src/tools/index.ts (~30) — the registry. getTools(planMode) — PLAN mode
+     gets read-only tools only; AGENT mode adds write/edit/bash/etc.
+  10. Then individual tools, easy standalone reads: fs.ts (282, note edit_file
+      collision detection), bash.ts, search.ts, plan.ts + todo.ts (the
+      plan_ready / todo_list control-flow tools), diagnostics.ts (the
+      self-healing compile checks).
+  11. src/prompts/builder.ts — buildSystemPrompt(); how mode, memory, and repo
+      map become the system message.
+
+  Supporting core
+
+  12. src/core/snapshot.ts — the /undo mechanism. memory.ts — .devx/memory.md.
+      repomap.ts — project context. session.ts / usage.ts / pricing.ts.
+
+  The CLI shell (read last, and selectively)
+
+  13. src/cli/index.ts (1985 — the monster) — arg parsing, onboarding, config,
+      the REPL. Don't read top-to-bottom. Jump to line ~1656 (new Agent(...))
+      and ~1740 (for await (const event of agent.run(...))) — the
+      event-consumption switch that renders everything the loop yields. That
+      closes the loop with step 3.
+  14. Then the render helpers as curiosity dictates: prompt.ts (743, the custom
+      line editor), markdown.ts / smooth.ts (streaming render), providers.ts
+      (894, provider catalog + model fetching), server.ts, statusline.ts.
+
+  Tests as documentation
+
+  tests/ mirrors src/ — tests/core/, tests/permissions/guard.test.ts,
+  tests/tools/ are concise executable specs for the trickiest logic. Read the
+  test alongside each core file.
+
+  Shortest path to "I get it": types.ts → loop.ts → openai.ts → tools/index.ts →
+  the event loop at cli/index.ts:1740. That's ~1,200 lines and covers the
+  entire architecture.
+
+✻ Crunched for 34s · done 9:35 PMclaude --resume cca7cde8-26f3-428d-b177-76ee50b2c49f
