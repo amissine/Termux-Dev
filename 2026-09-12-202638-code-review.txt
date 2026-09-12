@@ -1,0 +1,1030 @@
+ ▐▛███▛█   Claude Code v2.1.267
+▝▜██████▀  Sonnet 5 · Claude Pro
+  ▝▝ ▝▝    ~/Termux-Dev
+
+
+❯ I like reading code and want to read this codebase, suggest a path to         
+  proceed.                                                                      
+
+  Searched for 1 pattern, read 3 files, listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● This is termux-dev (devx) — a terminal-native AI coding agent, ~10k lines of
+  TypeScript, cleanly layered. Here's a reading path that follows the data flow
+  rather than the file tree.
+
+  Orientation (read first)
+
+  1. README.md — you've got the feature list; skim it for vocabulary (PLAN vs
+     AGENT mode, snapshots, memory bank, /serve).
+  2. src/core/types.ts (118 lines) — the whole domain model in one file.
+     Message, Tool, LLMProvider, AgentConfig, and the two event unions
+     LLMStreamChunk / AgentEvent. Everything else plugs into these interfaces.
+     Read it twice.
+
+  The engine (the core loop)
+
+  3. src/core/loop.ts (251) — Agent.run(), an async generator. This is the app:
+     prune context → call provider (streaming, with retry/backoff) → append
+     assistant message → execute each tool call (validate → permission check →
+     execute) → append tool results → repeat until no tool calls or
+     maxIterations. Small enough to hold in your head.
+  4. src/core/history.ts (169) — message store + pruneToLimit compaction that
+     loop.ts calls.
+  5. src/permissions/guard.ts (193) — check() / askUser(); the gate between the
+     model and your filesystem. Bash allowlist, trusted-projects logic.
+  6. src/core/network.ts (148) — the retryable-error classification behind the
+     reconnect logic in the loop.
+
+  Provider layer (model I/O)
+
+  7. src/providers/index.ts (10 lines) — trivial factory. Note: everything is
+     OpenAI-compatible; "universal provider support" = different base URLs.
+  8. src/providers/openai.ts (424) — chatStream(): SSE parsing, assembling
+     streamed tool-call deltas, token/cost accounting. The most intricate single
+     file; read it after the loop so you know what it's feeding.
+
+  Tools (what the agent can do)
+
+  9. src/tools/index.ts (~30) — the registry. getTools(planMode) — PLAN mode
+     gets read-only tools only; AGENT mode adds write/edit/bash/etc.
+  10. Then individual tools, easy standalone reads: fs.ts (282, note edit_file
+      collision detection), bash.ts, search.ts, plan.ts + todo.ts (the
+      plan_ready / todo_list control-flow tools), diagnostics.ts (the
+      self-healing compile checks).
+  11. src/prompts/builder.ts — buildSystemPrompt(); how mode, memory, and repo
+      map become the system message.
+
+  Supporting core
+
+  12. src/core/snapshot.ts — the /undo mechanism. memory.ts — .devx/memory.md.
+      repomap.ts — project context. session.ts / usage.ts / pricing.ts.
+
+  The CLI shell (read last, and selectively)
+
+  13. src/cli/index.ts (1985 — the monster) — arg parsing, onboarding, config,
+      the REPL. Don't read top-to-bottom. Jump to line ~1656 (new Agent(...))
+      and ~1740 (for await (const event of agent.run(...))) — the
+      event-consumption switch that renders everything the loop yields. That
+      closes the loop with step 3.
+  14. Then the render helpers as curiosity dictates: prompt.ts (743, the custom
+      line editor), markdown.ts / smooth.ts (streaming render), providers.ts
+      (894, provider catalog + model fetching), server.ts, statusline.ts.
+
+  Tests as documentation
+
+  tests/ mirrors src/ — tests/core/, tests/permissions/guard.test.ts,
+  tests/tools/ are concise executable specs for the trickiest logic. Read the
+  test alongside each core file.
+
+  Shortest path to "I get it": types.ts → loop.ts → openai.ts → tools/index.ts →
+  the event loop at cli/index.ts:1740. That's ~1,200 lines and covers the
+  entire architecture.
+
+✻ Crunched for 34s · done Wednesday 9:35 PM
+
+❯ /export                                                                       
+  ⎿  Conversation exported to: /home/alik/Termux-Dev/2026-09-09-roadmap.txt
+
+❯ what is the logic behind History.pruneToLimit                                 
+
+  Read 1 file (ctrl+o to expand)
+
+● History.pruneToLimit(maxTokens) — logic walkthrough
+
+  Goal: keep the conversation under maxTokens (estimated) while never breaking
+  an assistant/tool_call pairing and never dropping the system prompt, the first
+  user message, or the most recent exchange.
+
+  Step 0 — early exit. If estimateTokens(messages) <= maxTokens, do nothing,
+  return false (no compaction happened).
+
+  Step 1 — group into blocks (groupIntoBlocks). A block is either:
+  - a single message (system/user/plain assistant), or
+  - an assistant message that made tool calls plus all the following tool result
+    messages — kept atomic, since an assistant tool_calls entry is meaningless
+    to a provider without its matching tool responses.
+
+  This is the key invariant: pruning always operates on whole blocks, never
+  slicing inside a tool-call/tool-result group.
+
+  Step 2 — pin protected blocks (pinnedIndices):
+  - the system block (if any),
+  - the first user block found (foundUser flag stops after the first one —
+    preserves original task/context),
+  - the last 2 blocks unconditionally (numProtectLast = 2) — keeps the most
+    recent turn intact regardless of role.
+
+  Step 3 — Phase 1: truncate, don't delete. For every unpinned block, any tool
+  message longer than 1500 chars gets its content replaced with a "[Content 
+  truncated... Original length: N chars]" stub. This targets the usual bloat
+  culprits (large file reads, search dumps) while keeping the message present
+  (so IDs/roles still line up). After this pass, re-check total tokens — if now
+  under budget, commit (this.messages = blocks.flat()) and return true.
+
+  Step 4 — Phase 2: delete unpinned blocks entirely, oldest-first. If truncation
+  alone wasn't enough, walk blocks in original (chronological) order and for
+  each unpinned one, subtract its token estimate from the running total and mark
+  it deleted (blocks[i] = []), stopping as soon as the running total drops
+  to/under maxTokens. Finally filter out the emptied blocks and flatten.
+
+  Note it doesn't re-verify the final result against maxTokens after Phase 2 (it
+  trusts the running subtraction), and if every unpinned block gets deleted and
+  it's still over budget, it just returns true anyway — the pinned set (system
+  + first user + last 2 blocks) is a hard floor it won't cut further.
+
+  Return value: true means some compaction happened (used by loop.ts to emit the
+  "Context compacted..." system event); false means nothing needed to change.
+
+  Token estimator (estimateTokens) is a cheap heuristic, not a real tokenizer:
+  iterates chars, weighting Cyrillic range (0x0400–0x04FF) at 0.8, other
+  non-ASCII (>0x07FF, e.g. CJK) at 1.2, everything else at 0.25 per char — then
+  sums content plus, for tool calls, the call name and stringified arguments.
+
+  Net effect: oldest, biggest tool outputs get shrunk first; if still over
+  budget, oldest non-essential exchanges get dropped wholesale — while the
+  instructions (system), the original ask (first user block), and the live edge
+  of the conversation (last 2 blocks) are untouchable.
+
+✻ Worked for 16s · done 8:01 PM
+
+❯ what does estimateTokens get used for elsewhere                               
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● History's estimateTokens (and its two public wrappers,
+  getTotalTokens/getConversationTokens) is used in exactly two places, both in
+  the REPL — it's a context-budget estimator, distinct from the separate
+  token-per-second telemetry estimator in telemetry.ts.
+
+  1. src/core/loop.ts:74 — the primary consumer:
+  const wasCompacted = this.history.pruneToLimit(this.config.maxContextTokens);
+  pruneToLimit calls estimateTokens internally (as you saw) to decide
+  whether/how much to compact before every LLM call.
+
+  2. src/cli/index.ts:893 — the REPL's status/prompt-header display, once per
+  input loop iteration:
+  const currentTokens = history.getConversationTokens();   // excludes the 
+  system prompt
+  const maxTokens = config.maxContextTokens ||
+  getModelContextLimit(config.model);
+  const usagePercent = Math.min(100, Math.round((currentTokens / maxTokens) *
+  100));
+  This drives the context-usage percentage shown in the prompt header/statusline
+  (formatted via the local formatTokens helper right below it) — purely
+  cosmetic, doesn't feed back into pruning logic itself.
+
+  Note the deliberate split between the two public methods:
+  - getTotalTokens() — all messages including system prompt (not currently
+    called anywhere outside history.ts/tests, based on the grep — it's exposed
+    but unused in cli/index.ts).
+  - getConversationTokens() — filters out the system role first. This is the one
+    actually driving the UI percentage, so the displayed "context usage"
+    reflects conversation growth, not the (fixed) system prompt size.
+
+  Not related: src/cli/telemetry.ts's estimateTokensFromText/getTotalTokens is a
+  completely separate class (LiveTelemetryTracker) with its own char-counting
+  heuristic, used only for the live tokens/sec display during streaming
+  (index.ts:1745,1759,1679-1680,1784-1785) — it has no connection to History or
+  context-window management.
+
+✻ Sautéed for 16s · done 8:07 PM
+
+❯ what does groupIntoBlocks do if two assistant tool-call blocks are adjacent   
+
+● Two assistant tool-call messages in a row are never merged into one block —
+  each starts its own block, and the algorithm doesn't look past the immediate
+  boundary.
+
+  Walking the code:
+  while (i < messages.length) {
+    const msg = messages[i];
+    if (msg.role === 'assistant' && msg.tool_calls?.length) {
+      const block = [msg]; i++;
+      while (i < messages.length && messages[i].role === 'tool') {
+        block.push(messages[i]); i++;
+      }
+      blocks.push(block);
+    } else {
+      blocks.push([msg]); i++;
+    }
+  }
+
+  Normal case — turn 1: assistant(tool_calls) → tool → tool, turn 2:
+  assistant(tool_calls) → tool:
+  - At msg1 (assistant+tool_calls): opens a block, inner while slurps the
+    following tool messages until it hits msg4 (assistant) — inner loop
+    condition role === 'tool' fails, stops. Block 1 = [msg1, tool, tool].
+  - Outer loop resumes at msg4, which is itself assistant+tool_calls, so it
+    opens a fresh block and slurps its trailing tool messages. Block 2 = [msg4, 
+    tool].
+
+  So consecutive tool-calling turns just become consecutive, independently-sized
+  blocks — each gets pinned/truncated/deleted as its own atomic unit in
+  pruneToLimit. That's the intended, common case (every agent iteration in
+  loop.ts naturally produces one such block).
+
+  Degenerate case — if an assistant tool_calls message were immediately followed
+  by another assistant tool_calls message with zero tool messages in between
+  (shouldn't happen via loop.ts, which always appends a tool-role response for
+  every call, even cancelled ones, but could arise from malformed/injected
+  history):
+  - The inner while condition (messages[i].role === 'tool') is false on the very
+    first check, so it never executes. Block 1 collapses to [msg1] alone — an
+    assistant message with tool_calls but no paired tool results in its block.
+  - msg2 then starts its own block the same way.
+
+  This doesn't crash anything, but it does mean the "atomic pairing" guarantee
+  only holds when tool results are contiguous and immediately follow their
+  triggering assistant message — which is the invariant loop.ts maintains. If
+  that invariant were ever violated in the other direction (a stray tool message
+  not immediately after its assistant call, e.g. from a bug elsewhere), that
+  lone tool message would fall into the else branch and become its own
+  single-message block, decoupled from its assistant message — meaning Phase 2
+  of pruneToLimit could delete one half of a pair without the other. Worth
+  knowing as a fragility point, but not something the current codebase's write
+  path (loop.ts) triggers.
+
+✻ Crunched for 32s · done 8:09 PM
+
+❯ what's in prompts/builder.ts                                                  
+
+  Read 1 file (ctrl+o to expand)
+
+● buildSystemPrompt(planMode) is the one function that assembles the entire
+  system-message string sent to the model. It's called once per session in
+  cli/index.ts (history.addMessage({ role: 'system', content: sysPrompt })), not
+  per-turn. Structure, top to bottom:
+
+  1. Header (always). Identity line ("You are devx, an expert AI developer."),
+  OS description (detects Termux via PREFIX env var vs. falls back to
+  os.platform()/arch()), CWD, and an ISO timestamp.
+
+  2. Mode block — branches on planMode:
+  - PLAN mode: a long, strict rule list — no full code dumps, no write/edit/bash
+    tools, must explore with read-only tools, must ask clarifying questions
+    exclusively via the ask_questions tool call (never as plain markdown text),
+    must produce a structured plan with a specific emoji-headed format (written
+    in Russian: "🎯 Цель и архитектурный обзор", etc.), and must call plan_ready
+    when done so the CLI can show the [🚀 Go / ✏️ Other] prompt.
+  - AGENT mode: shorter — full tool access, use todo_list to track progress, run
+    diagnose_code after edits and self-fix with edit_file, use install_package
+    for deps, auto-launch serve_preview for web/frontend work, use save_memory
+    for durable decisions, and briefly narrate actions before tool calls.
+
+  This mirrors what getTools(planMode) in src/tools/index.ts actually exposes —
+  the prompt text and the tool registry are two independently-maintained
+  descriptions of the same mode split, so a mismatch between them is a class of
+  bug to watch for.
+
+  3. Project Memory Bank — best-effort load of .devx/memory.md via
+  MemoryManager.loadMemory(), appended verbatim if non-empty. Swallows errors
+  silently (catch {}).
+
+  4. AGENTS.md lookup — walks up parent directories from cwd until it finds an
+  AGENTS.md (or hits filesystem root), reading the first one found and injecting
+  it as "Project Instructions." This is the per-project override/convention
+  mechanism.
+
+  5. Repo map — lazily imports RepoMapGenerator from core/repomap.ts and
+  generates a compact AST/exports map (capped, 50 some limit param) of the
+  codebase, appended as "Codebase Map & Exported Symbols." Also silently
+  swallows failures.
+
+  Notable properties:
+  - It's not memoized — every call re-reads memory, re-walks for AGENTS.md, and
+    regenerates the repo map from scratch (relevant if it's ever called more
+    than once per session — worth checking, since a plan→agent mode switch would
+    need a fresh prompt with different mode rules, and indeed the tool list
+    confirms mode does change tool availability, so this function likely gets
+    called again on mode switch).
+  - Mixed-language prompt: instructions are in English, but the PLAN-mode output
+    template headers are hardcoded in Russian — consistent with other Russian
+    strings you saw in loop.ts (error messages) and history.ts (comments),
+    suggesting the primary author/user is Russian-speaking.
+  - All the "load extra context" steps (memory, AGENTS.md, repo map) fail open
+    (empty catch {}) — a missing or unreadable file never blocks prompt
+    construction.
+
+✻ Cooked for 17s · done 8:13 PM
+
+❯ what does repomap.ts generate look like                                       
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● That's the real output (ran it live, capped to 15 files here — the actual
+  prompt uses 50). Format is deliberately compact and lossy, not a real AST:
+
+  Project Structure & Key Symbols (Repo Map):
+  • bin/devx.js
+  • src/cli/banner.ts (type BannerMode, fn renderBannerLines, fn drawBanner)
+  • src/cli/clipboard.ts (fn expandHomePath, fn formatFileSize, fn
+  getUniqueImageName, fn saveClipboardImage, fn processPastedFilePath)
+  • src/cli/export.ts (interface ExportResult, class SessionExporter)
+  ...
+
+  How each piece is produced, mapping back to the code:
+
+  - One bullet per file. File list comes from scanFiles: a depth-first
+    fs.readdir walk from rootDir, skipping IGNORED_DIRS (.git, node_modules,
+    dist, etc.) and any dot-directory, filtering to a fixed extension set (.ts 
+    .tsx .js .jsx .py .mjs .cjs .rs .go .c .cpp .h .java). Stops as soon as it's
+    collected maxFiles (50 in the real prompt call, capped here at 15) — so
+    it's a prefix of the walk order, not a representative sample; big repos get
+    truncated arbitrarily by directory-traversal order rather than by
+    importance.
+  - Symbols in parens come from extractSymbols, which is regex-only, not a
+    parser — no .ts/AST library involved. Per file: skip if >256KB, only look at
+    the first 300 lines, and match line-anchored regexes for export function,
+    export class, export interface, export type, export const
+    (non-underscore-prefixed) for JS/TS; class/def for Python; pub fn/pub struct
+    for Rust; func for Go. Notice bin/devx.js and src/cli/index.ts above show
+    no symbols — devx.js has no matching exports, and index.ts's exports (if
+    any) apparently don't hit the regexes or fall past line 300.
+  - Capped twice: at most 8 symbols extracted per file (symbols.slice(0, 8)),
+    then only the first 5 are actually shown in the bullet, with , ... appended
+    if there were more (file.symbols.slice(0, 5)... + (length > 5 ? ', ...' : 
+    '')).
+  - Silent failure everywhere — unreadable dirs/files, stat errors, and
+    top-level exceptions all resolve to ''/[] rather than throwing, consistent
+    with builder.ts's fail-open pattern.
+
+  Net result: a cheap, greppable "table of contents" — good for pointing the
+  model at which file likely has what, useless as a precise interface reference
+  (no params, no return types, no re-exports via export { x } from ..., no
+  default exports, nothing past line 300 or bullet 50).
+
+✻ Cogitated for 20s · done 8:19 PM
+
+❯ what's in memory.ts                                                           
+
+  Read 1 file (ctrl+o to expand)
+
+● src/core/memory.ts (75 lines) is deliberately simple — a flat-file,
+  append-only "long-term memory" store, plus the tool that lets the model write
+  to it.
+
+  Storage: a single fixed file, .devx/memory.md, resolved relative to
+  process.cwd() at import time (const MEMORY_DIR = path.join(process.cwd(), 
+  '.devx')) — note these are consts computed once at module load, not
+  re-evaluated per call, so if cwd() ever changes mid-process the path won't
+  follow it.
+
+  MemoryManager static class, four methods, no instance state:
+
+  - loadMemory() — sync-checks existence with fsSync.existsSync, then
+    async-reads. Returns '' on missing file or any read error. This is what
+    prompts/builder.ts calls each time it rebuilds the system prompt.
+  - addFact(fact) — the interesting one:
+    - Ensures .devx/ exists (mkdir recursive).
+    - Reads current content (or '').
+    - Trims the incoming fact; bails silently if empty.
+    - Dedup check: if (!current.includes(trimmedFact)) — a plain substring
+      check, not line-aware. So a fact that's a substring of an already-saved
+      longer line is silently dropped as a "duplicate" even if it's a genuinely
+      new, shorter fact; conversely two facts differing only by trailing
+      punctuation/whitespace count as distinct.
+    - If the file didn't exist/was empty, seeds a header: # Project Memory 
+      Bank\n\n## Established Rules & Architecture\n.
+    - Appends • {fact}\n and rewrites the whole file.
+    - No size cap, no pruning, no dedup against near-duplicates — this file can
+      only grow, and it's the same file that builder.ts injects wholesale into
+      every system prompt, so it directly inflates every request's token count
+      over a long-lived project (there's a slight tension with
+      History.pruneToLimit's careful budget management — memory content bypasses
+      that entirely since it's baked into the pinned system message).
+  - clearMemory() — deletes the file if present. No corresponding tool exposes
+    this to the model (must be a slash command in the CLI, e.g. /memory clear
+    per the README).
+  - isMemoryPresent() — sync existence check, presumably used somewhere in the
+    CLI/UI to indicate whether a memory bank exists (e.g., for a status
+    indicator or onboarding hint).
+
+  saveMemoryTool — the Tool implementation the agent calls:
+  - Single required string param fact.
+  - validateArgs just checks it's a non-empty string.
+  - execute delegates straight to MemoryManager.addFact and returns a
+    confirmation string echoing the fact back — no return value distinguishes
+    "newly added" from "was already a duplicate and silently skipped," so the
+    model always gets told it was "saved" even when addFact's substring-dedup
+    silently no-oped.
+
+  This tool is registered in both plan and agent mode tool lists
+  (src/tools/index.ts's baseTools array includes it unconditionally), consistent
+  with the system prompt only mentioning it explicitly in the AGENT-mode text
+  but not restricting it structurally.
+
+✻ Worked for 15s · done 8:20 PM
+
+❯ what's in permissions/guard.ts                                                
+
+  Read 1 file (ctrl+o to expand)
+
+● src/permissions/guard.ts (193 lines) implements the PermissionGuard interface
+  from types.ts — the thing loop.ts calls before every tool execution
+  (guard.check(...) → maybe guard.askUser(...)). Two parts: pure decision-logic
+  helpers, and the CLIConsoleGuard class that renders prompts.
+
+  Helper functions (module-level, pure):
+
+  - isPathOutsideCwd(targetPath) — resolves the target against process.cwd() and
+    checks if the relative path escapes it (starts with '..' or is absolute
+    after relativizing). Used to flag writes/edits/mkdirs that reach outside the
+    project.
+  - isDangerousBashCommand(cmd) — a denylist of catastrophic shell patterns:
+    various rm -rf/-fr flag-order permutations against /, ~, *, ., .., $HOME,
+    $PREFIX, or the Termux data dir; plus mkfs, dd if=, the fork bomb :(){ :|:& 
+    };:, chmod -R 777 /, writing to /dev/sda, format c:. Normalizes
+    whitespace/case first. This is a blocklist, not a sandbox — it's necessarily
+    incomplete (e.g. doesn't catch rm -rf via a variable, obfuscated paths,
+    find -delete, etc.), but it's the one check that fires even in
+    YOLO/auto-approve mode.
+  - hasComplexChainingOrRedirection(cmd) — flags &&, ||, ;, |, >, <, backticks,
+    $(, newlines. Used to decide whether a command is "clean" enough to match
+    against the user's bash allowlist — chained/redirected commands can't be
+    allowlist-matched even if the visible command looks safe, since the chaining
+    could hide something else.
+
+  CLIConsoleGuard implements PermissionGuard — constructed with autoApprove
+  (YOLO mode) and bashAllowlist (array of pre-approved command prefixes), both
+  sourced from AgentConfig.
+
+  - check(toolName, args) → true means "needs confirmation," false means
+    "auto-execute":
+    a. YOLO mode (autoApprove): normally always returns false (no prompt) —
+       except a dangerous bash command still forces true. This is the one safety
+       net that survives auto-approve.
+    b. Bash-family tools (bash/exec/run_command): if the command is safe (not
+       dangerous, no chaining/redirection) and matches the allowlist (exact
+       match or cmd.startsWith(pattern + ' '), case-insensitive) → auto-allow
+       (false). Otherwise → confirm (true).
+    c. install_package → always confirm.
+    d. delete_file/remove_file → always confirm.
+    e. write_file/edit_file/mkdir → confirm only if the target path resolves
+       outside cwd.
+    f. Any mcp__* tool → always confirm.
+    g. Everything else → auto-allow.
+  - askUser(toolName, args) — the actual interactive prompt, using
+    @clack/prompts:
+    - Headless guard: if !process.stdin.isTTY, immediately denies and prints a
+      message telling the user to pass --yolo/-y. This is what makes headless
+      mode (src/cli/headless.ts) require auto-approve to do anything requiring
+      confirmation.
+    - Picks a warning style: red "SECURITY WARNING" banner for dangerous bash,
+      yellow "PERMISSION GUARD" for MCP tools (parses mcp__server__tool to show
+      server/tool name separately) or other tools generically.
+    - Prints a tailored argument preview: full command for bash, package list
+      for installs, target path (highlighted red if outside project) for file
+      ops, else raw JSON dump.
+    - Toggles stdin raw mode off before prompting and restores it after (finally
+      block) — needed because the custom prompt input handling (prompt.ts)
+      presumably runs in raw mode, which would break clack's own line-based
+      prompt.
+    - p.confirm(...) with initialValue: !isDangerous (defaults to "no" for
+      dangerous commands, "yes" otherwise) — a nice UX nudge steering the
+      default answer by risk.
+    - Returns strictly allowed === true (clack's confirm can also return a
+      cancellation symbol, which this correctly treats as "denied," not
+      throwing).
+
+  Net design: check() is a cheap synchronous policy decision; askUser() is only
+  invoked when check() returns true, and is the sole place doing terminal I/O —
+  matching the loop.ts call site you read earlier (if (this.guard.check(...)) { 
+  const allowed = await this.guard.askUser(...); ... }).
+
+✻ Cooked for 19s · done 8:20 PM
+
+❯ what's in mcp/manager.ts                                                      
+
+  Read 1 file (ctrl+o to expand)
+
+● src/mcp/manager.ts (223 lines) is a singleton that discovers configured MCP
+  servers, spawns clients for each, and converts their tools into devx's native
+  Tool interface so the agent loop can call them like any other tool.
+
+  Singleton pattern: MCPManager.getInstance() — private constructor, one shared
+  instance. Called from cli/index.ts (MCPManager.getInstance().init()) and from
+  tools/index.ts (MCPManager.getInstance().getTools()), so config and MCP tools
+  are process-wide, not per-Agent-instance.
+
+  State: clients: Map<name, MCPClient>, tools: Tool[] (flattened across all
+  servers), serverStatuses: Map<name, MCPServerStatus> (for the status UI),
+  isInitialized guard flag.
+
+  init(explicitConfigs?):
+  1. No-ops if already initialized (returns cached tools) — so config changes
+     require an explicit reload().
+  2. Loads server configs via loadConfigs() if not passed explicitly.
+  3. If zero servers configured, marks initialized and returns [] immediately
+     (cheap common case — most users have no MCP servers).
+  4. Otherwise, starts all servers concurrently (serverEntries.map(async ...) +
+     Promise.all), each independently:
+     - disabled: true in config → recorded as status: 'disabled', skipped
+       entirely (no client spawned).
+     - Else: status set to 'connecting', a new MCPClient(name, cfg) is created
+       and .start()ed (spawns the actual MCP server process/connection — that's
+       in client.ts, not shown here).
+     - On success: status → 'connected', and every tool the MCP server exposes 
+       gets wrapped:
+       - Renamed to mcp__{serverName}__{toolName} — this is the exact
+         namespacing guard.ts pattern-matches on (t.startsWith('mcp__')) to
+         always require confirmation, and that askUser parses back apart to
+         display "server / tool".
+       - description prefixed with [MCP: {name}].
+       - parameters taken directly from the MCP tool's JSON Schema inputSchema.
+       - validateArgs is a no-op — validation is deferred entirely to the MCP
+         server itself.
+       - execute just forwards to client.callTool(mt.name, args) (using the
+         original unprefixed tool name against the client).
+     - On failure (server won't start, handshake fails, etc.): status → 'failed'
+       with the error message captured, but this doesn't abort the other
+       servers' init (each is caught independently inside its own async arrow,
+       and the outer Promise.all never rejects because nothing throws past the
+       try/catch).
+  5. Sets isInitialized = true and returns the accumulated tools.
+
+  getTools() / getStatuses() — simple accessors.
+
+  reload() — tears everything down (stopAll(), clear clients/tools/statuses,
+  reset the init flag) and calls init() again. This is presumably wired to a
+  /mcp reload slash command.
+
+  stopAll() — closes every client, swallowing errors per-client so one bad
+  close() doesn't block the rest.
+
+  renderStatusCard() — a fairly elaborate hand-drawn box-drawing-character
+  status panel (theme-aware color via getCurrentTheme(), width computed from
+  terminal columns, ANSI-aware padding via the local stripAnsi helper for
+  alignment math). Shows per-server: name, colored status badge (🟢/🟡/🔴/⚪),
+  truncated command line, tool count, first 3 tool names (+"N more"), and
+  truncated error text if failed. Falls back to a "No MCP servers configured"
+  empty state pointing at the two config file locations. This is presumably what
+  a /mcp or /mcp status slash command prints.
+
+  loadConfigs() — checks up to 5 possible config file locations, in this
+  priority order, and merges results from all that exist (later files can
+  overwrite earlier same-named server entries since they all write into the same
+  result object):
+  1. ~/.devxrc.json
+  2. ./.devx/mcp.json
+  3. ./.claude/mcp.json — notably, this makes it compatible with Claude Code's 
+     own .mcp.json/mcp.json config location, so MCP servers set up for Claude
+     Code are picked up automatically.
+  4. ./.devx.json
+  5. ./.mcp.json
+
+  Each file is expected to have a top-level mcpServers: Record<string, {command,
+  args?, ...}> shape (the same shape Claude Desktop/Claude Code use). Entries
+  missing a command field are silently dropped; any parse error for a given file
+  is swallowed and that file just contributes nothing.
+
+  Worth pairing this read with src/mcp/client.ts (250 lines, the actual
+  JSON-RPC/stdio transport and start()/callTool()/close() implementation) and
+  src/mcp/types.ts (the config/status interfaces referenced here) if you want
+  the full picture — this file is purely the orchestration layer above them.
+
+✻ Worked for 21s · done 8:21 PM
+
+❯ what's in mcp/client.ts                                                       
+  Read 2 files (ctrl+o to expand)
+
+● src/mcp/client.ts (250 lines) is a minimal hand-rolled JSON-RPC 2.0 over stdio
+  client for a single MCP server process — the layer manager.ts orchestrates
+  one-per-server. No SDK dependency (no @modelcontextprotocol/sdk); it's all raw
+  child_process + newline-delimited JSON.
+
+  State: the spawned ChildProcess, an auto-incrementing nextRequestId, a
+  pendingRequests map (id → {resolve, reject, timer}) for in-flight JSON-RPC
+  calls, a line-reassembly buffer for stdout, the cached tools list, and
+  isConnected.
+
+  start() — spawns the process and performs the MCP handshake, wrapped in a
+  manually-managed Promise with an isSettled guard (so the timeout, the error
+  event, and the success path can't double-resolve/reject each other):
+  1. Rejects immediately if config.disabled.
+  2. 15s hard timeout on the whole startup sequence — kills the process and
+     rejects if the handshake+tools-list hasn't completed by then.
+  3. Builds env as {...process.env, ...config.env} (server config can
+     add/override env vars, inherits everything else).
+  4. Windows quirk: uses shell: true only when the command is .cmd/.bat/npx/npm
+     on win32 — a targeted workaround for Windows' inability to directly exec
+     those without a shell, left off elsewhere to avoid needless shell-injection
+     surface.
+  5. Wires stdout → handleStdout (line parser), stderr → silently discarded
+     (comment says "used for logging/debugging" but nothing is actually
+     captured/shown — probably a TODO or dead comment), error/close →
+     reject/cleanup.
+  6. Does the three-step MCP client handshake: initialize request (protocol
+     version 2024-11-05, empty capabilities, clientInfo: {name: 'devx', version:
+     DEVX_VERSION}) → notifications/initialized (fire-and-forget notification,
+     no response expected) → tools/list request to populate this.tools.
+  7. On success, isConnected = true, resolves with the tool list — this is what
+     manager.ts receives and wraps into devx Tools.
+
+  callTool(toolName, args) — sends a tools/call request with a longer 60s 
+  timeout (vs. 15s default for other requests, since tool execution can be
+  slow). Response content is a list of typed parts (matching MCPCallToolResult):
+  - text → pushed as-is.
+  - image → replaced with a placeholder string [Image content (mimeType)] —
+    image data itself is dropped, not surfaced to the model as an attachment.
+    This is a real capability gap: an MCP tool that returns a screenshot, for
+    instance, would be invisible to the agent.
+  - resource → stringified as [Resource: {...}].
+  - Joins parts with \n\n; if res.isError is set, throws the joined text as an
+    Error (so manager.ts's tool wrapper's execute() will throw, and loop.ts
+    catches it as Error executing tool: ...).
+
+  handleStdout(chunk) — the line-framing parser: appends to buffer, splits on
+  \n, keeps the last (possibly incomplete) fragment back in the buffer
+  (lines.pop()) rather than processing it, then JSON-parses each complete line.
+  Non-JSON lines (e.g. a startup banner some server prints to stdout instead of
+  stderr) are silently ignored via an empty catch. Only messages with an id are
+  handled — this client never handles server-initiated requests or unsolicited
+  notifications from the server, only responses correlated to its own outgoing
+  requests via pendingRequests.
+
+  sendRequest(method, params, timeoutMs=15000) — allocates an id, sets a
+  per-request timeout that rejects and evicts the pending entry if it fires,
+  stores the resolver/rejecter, writes JSON.stringify(req) + '\n' to stdin.
+  Write failures reject immediately and clean up the timer/pending entry.
+
+  sendNotification — same shape minus id, no response tracking, errors silently
+  swallowed (catch {} — a notification failing to send has no one to tell).
+
+  close()/cleanup() — cleanup() flips isConnected false and rejects every
+  still-pending request with a "disconnected" error (so callers waiting on
+  sendRequest don't hang forever if the process dies mid-call); close() calls
+  cleanup() then kills the process and nulls the reference. cleanup() is also
+  invoked from the process 'close' handler, so an MCP server crashing
+  mid-session correctly fails any outstanding tool calls rather than hanging the
+  agent loop.
+
+  Notable gaps/fragility (useful to flag since you're reading critically):
+  - No reconnect/retry logic at this layer at all — a dead server just fails
+    future callTools until someone calls manager.reload().
+  - stderr is fully discarded, so debugging a misbehaving MCP server gives you
+    nothing from this client alone.
+  - Image/resource content from tool results is lossy by design — flattened to
+    text placeholders.
+  - If a server ever sends a JSON-RPC request to the client (some MCP servers
+    do, e.g. for sampling/roots callbacks), it's silently ignored since only
+    id-bearing response messages are matched against pendingRequests — no
+    server-to-client request handling exists here.
+
+  This pairs directly with src/mcp/types.ts (the small file above) which just
+  defines the wire-format interfaces used throughout — nothing behavioral there,
+  purely types.
+
+✻ Churned for 24s · done 8:22 PM
+
+❯ what's in tools/fs.ts                                                         
+
+  Read 1 file (ctrl+o to expand)
+
+● src/tools/fs.ts (282 lines) defines the five filesystem Tools registered in
+  tools/index.ts — read_file, write_file, edit_file, list_dir, mkdir. (Note:
+  delete_file/remove_file, which guard.ts explicitly checks for, isn't actually
+  defined here or anywhere in this file — worth a grep if you're curious whether
+  it exists elsewhere or is a guard rule for a tool that was removed/never
+  implemented.)
+
+  readFileTool — trivial: fs.readFile(path, 'utf8'), wraps errors with a
+  friendlier message. No size limit, no line-range support, no binary detection
+  — a huge file gets dumped whole into context (this is exactly what
+  History.pruneToLimit's tool-truncation phase exists to mitigate after the
+  fact).
+
+  writeFileTool — creates or overwrites, always full-content (not incremental):
+  1. Calls globalSnapshotManager.recordFileBeforeChange(path) first — this is
+     the /undo mechanism's hook, capturing pre-change state before anything is
+     touched.
+  2. mkdir -p on the parent directory so writes to new nested paths just work.
+  3. Best-effort reads the old content first (swallowing errors) purely to
+     compute a line-count diff — existed flag distinguishes create vs. overwrite
+     for the response message.
+  4. Writes new content, then returns a JSON string (not plain text) with
+     status, action, path, addedCount, a diffLines preview (first 6 lines only,
+     all prefixed +), and a human summary line — this structured JSON is
+     presumably what cli/index.ts parses to render the diff box (diff.ts's
+     formatDiffBox) rather than dumping raw tool output to the model/user
+     directly.
+
+  editFileTool — the most complex one, a find-and-replace tool (not a
+  line-number-based patch), matching what the README calls "collision-safe code
+  editing with line-number error reporting on duplicate matches":
+  1. Records a pre-change snapshot, same as write.
+  2. Reads current content; if the literal target string isn't found, retries
+     after normalizing both content and target's line endings (\r\n → \n) —
+     handles the common case of an LLM emitting Unix newlines against a CRLF
+     file (or vice versa) without failing outright.
+  3. Finds every occurrence of target via manual indexOf scanning (not regex, so
+     no special-char escaping issues), advancing by target.length each time to
+     avoid overlapping matches.
+  4. Ambiguity guard: if there's more than one match and replaceAll wasn't
+     requested, it refuses to edit and instead throws an error listing the exact
+     line number of every occurrence — forcing the model to either add more
+     context to disambiguate target, or explicitly opt into replaceAll. This is
+     the "collision-safe" behavior — it never silently guesses which occurrence
+     you meant.
+  5. Line-ending preservation: detects if the original file used CRLF (hasCRLF)
+     and re-normalizes the entire new content to match after the substitution —
+     so a model emitting \n won't silently convert a CRLF file to mixed line
+     endings.
+  6. Two paths:
+     - replaceAll with >1 match: content.split(target).join(replacement) (a safe
+       global replace without regex escaping headaches), returns
+       occurrencesReplaced count.
+     - Single match: computes the affected line range (startLine/endLine) from
+       the match offset, builds a contextual diff preview: up to 2 lines of
+       context before, the removed lines marked -, the added lines marked +, up
+       to 2 lines of context after — each prefixed with its line number,
+       mimicking a unified diff but hand-rolled with manual counters
+       (lineCounter/addCounter) rather than a diff library. Returns this in the
+       same JSON shape as write_file (diffLines, summary with +N -M line
+       counts).
+
+  Both write paths return stringified JSON, which is a deliberate contract with
+  the CLI/rendering layer, not just "text a human reads" — worth checking
+  cli/index.ts's tool_end handling to see exactly how it's parsed (this is a
+  good next file to jump to if you want to close that loop).
+
+  listDirTool — one level only (fs.readdir, not recursive, unlike repomap.ts's
+  walker), filters the same style of ignore-list as repomap.ts (node_modules,
+  .git, .next, .cache, dist — note this list is duplicated here rather than
+  shared/imported from repomap.ts's IGNORED_DIRS, so the two lists could drift,
+  e.g. this one lacks .nuxt/build/out/coverage/.vscode/.idea that repomap.ts
+  has). Output is plain [DIR]/[FILE] name lines, not JSON.
+
+  mkdirTool — thin wrapper over fs.mkdir(path, {recursive: true}). Notably
+  doesn't call globalSnapshotManager — only file content changes are snapshotted
+  for undo, not directory creation, so /undo presumably can't clean up an empty
+  directory a failed operation created.
+
+  Common thread across all five: no path sandboxing/traversal checks live inside
+  this file — that responsibility is pushed entirely to permissions/guard.ts's
+  isPathOutsideCwd check at the check() gate before execute() ever runs. Worth
+  reading core/snapshot.ts next since two of these tools call into it as their
+  very first side-effecting action.
+
+✻ Cooked for 24s · done 8:23 PM
+
+❯ what's in core/snapshot.ts                                                    
+
+  Read 1 file (ctrl+o to expand)
+
+● src/core/snapshot.ts (104 lines) is the whole /undo mechanism — an in-memory,
+  per-turn, first-write-wins snapshot store. It's the module fs.ts's
+  write_file/edit_file tools call into via the exported singleton
+  globalSnapshotManager.
+
+  Data model:
+  - FileSnapshot — one file's pre-change state: absolute filePath, whether it
+    existed, and its content (or null if it didn't exist).
+  - TurnSnapshot — a batch: an id (turn_{timestamp}), a timestamp, and a
+    Map<absolutePath, FileSnapshot>.
+  - SnapshotManager.history: TurnSnapshot[] — a stack of completed turns;
+    currentTurn — the turn being accumulated right now.
+
+  beginTurn() — starts a fresh, empty turn, replacing whatever currentTurn was
+  (no warning if one was already open and unfinished — see below).
+
+  recordFileBeforeChange(filePath) — the core capture logic, called as the first
+  thing both write_file and edit_file do:
+  - Auto-starts a turn if none is open (beginTurn() lazily) — so callers don't
+    strictly need to call beginTurn() themselves, though something clearly does
+    elsewhere (see below).
+  - Resolves to an absolute path, then first-write-wins: if 
+    (this.currentTurn!.files.has(resolved)) return; — if this file was already
+    snapshotted earlier in the same turn, does nothing. This matters: if a turn
+    does two edits to the same file, the snapshot preserves the state before the
+    first edit of the turn, so undo reverts the whole turn's changes to that
+    file at once, not edit-by-edit.
+  - Captures either the current file content (existed: true) or records existed:
+    false, content: null for a file that doesn't exist yet (about to be
+    created).
+  - Read failures (permissions, etc.) throw — this is notable: if snapshotting
+    fails, the whole tool call fails before the actual write happens (since
+    fs.ts calls this first), so a snapshot failure protects against an
+    unrecorded, unrevertable change rather than silently proceeding.
+
+  finishTurn() — commits currentTurn onto the history stack, but only if it
+  captured at least one file (files.size > 0 — a turn with no file changes isn't
+  pushed, avoiding empty undo entries), then clears currentTurn.
+
+  undoLastTurn() — pops the most recent turn and, for each file:
+  - If it existed before → restores the exact old content (creating the parent
+    dir if needed, in case something deleted the dir in between).
+  - If it didn't exist before (was newly created this turn) → deletes it, and
+    reports "path (deleted)" in the result.
+  - Per-file failures are caught and logged to console.error but don't abort
+    reverting the rest of the batch — partial-undo-on-error, not all-or-nothing.
+  - Returns {revertedFiles, count} for the CLI to display.
+
+  getUndoCount() — stack depth, presumably shown somewhere in the UI/statusline
+  to indicate how many undo steps are available.
+
+  Design properties worth flagging:
+  - Pure in-memory, no persistence. The whole undo stack lives in the
+    SnapshotManager instance for the life of the process — closing devx and
+    reopening loses all undo history. Nothing here touches disk except the
+    actual files being reverted.
+  - No cap on stack size — every turn with file changes stays in history forever
+    for the session; a very long session accumulates full-file-content
+    snapshots unboundedly in memory.
+  - Turn boundaries aren't visible in this file — beginTurn()/finishTurn() must
+    be called from the orchestrating loop (almost certainly cli/index.ts, once
+    per user-submitted prompt/agent run), not from loop.ts or fs.ts themselves.
+    Worth grepping beginTurn|finishTurn|undoLastTurn in cli/index.ts to see
+    exactly where a "turn" starts/ends — my guess is it wraps each call to
+    agent.run(...), meaning a single user message that triggers multiple tool
+    calls across multiple loop iterations is treated as one undoable turn, which
+    matches the "every change made by the AI... roll back... with a single
+    command" framing in the README.
+  - Directory-only side effects aren't tracked — as noted when reading fs.ts,
+    mkdirTool never calls recordFileBeforeChange, so an undo can leave behind an
+    empty directory that a turn created.
+  - Interacts with edit_file's ambiguity guard indirectly: since
+    recordFileBeforeChange runs before edit_file reads the file and checks for
+    multiple matches, a snapshot gets recorded even for an edit call that
+    ultimately throws (ambiguous target, target not found) — harmless
+    (first-write-wins means it just captured the unchanged current state), but
+    it does mean a failed/aborted edit attempt still "opens" a turn and could
+    get merged with a subsequent successful edit to the same file within the
+    same turn.
+
+  Good next stop: grep cli/index.ts for
+  beginTurn/finishTurn/undoLastTurn/getUndoCount to see exactly how turn
+  boundaries are drawn around agent.run() and how /undo is wired as a slash
+  command — that closes the loop between this file and the REPL.
+
+✻ Churned for 23s · done 8:24 PM
+
+❯ grep beginTurn finishTurn undoLastTurn in cli/index.ts                        
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● This confirms exactly the guess: a "turn" = one user-submitted message through
+  to the end of the agent's full response (however many tool-call iterations
+  that takes).
+
+  beginTurn() — line 1639, right where the user's input is finalized (after
+  attachments/images are merged into finalContent) and before
+  history.addMessage({role: 'user', ...}). So the snapshot turn opens at the
+  same moment the user message enters history.
+
+  finishTurn() — line 1966, in the finally block wrapping the whole agent-run
+  try/catch (the block that also handles streaming cleanup, spinner, SIGINT
+  listener removal, raw-mode restore). This means the turn closes no matter how
+  the run ends — normal completion, thrown error, or user abort (Ctrl+C) — since
+  finally always runs. Consequence: if the user aborts mid-edit, whatever files
+  were already written before the abort are still captured in that turn's
+  snapshot and are undoable, matching loop.ts's cancellation handling you read
+  earlier (synthetic [Operation cancelled by user] tool results for calls that
+  didn't get to run — but calls that did run and write files stay recorded).
+
+  /undo command — line 1265-1277:
+  const { revertedFiles, count } = await globalSnapshotManager.undoLastTurn();
+  if (count === 0) {
+    p.log.warn('No changes to undo.');
+  } else {
+    history.popLastTurn();
+    p.log.success(...revertedFiles list...);
+  }
+  Two things worth noting:
+  1. It calls history.popLastTurn() — the method you read back in history.ts
+     that pops trailing non-user messages then the triggering user message
+     itself. So /undo doesn't just revert files on disk, it also erases the 
+     corresponding conversation turn from history — the model won't see that
+     exchange ever happened on the next request. This is a stronger "undo" than
+     just file rollback; it rewinds both state and context together.
+  2. count === 0 (nothing to revert) still leaves history untouched —
+     popLastTurn() is only called in the success branch, so an /undo with no
+     file changes to revert doesn't spuriously delete a real conversation turn
+     that just happened not to touch any files.
+
+  One subtlety this raises: history.popLastTurn()'s definition assumes the last
+  user message is the very last user-rooted block in history — but
+  snapshotManager's stack is independent of history's message list. If a turn
+  produced zero file changes, finishTurn() never pushes it onto
+  SnapshotManager.history (files.size > 0 gate) — so calling /undo twice in a
+  row after a no-file-change turn will pop the previous file-changing turn's
+  snapshot while history.popLastTurn() only pops the most recent conversation
+  turn (the no-file-change one). That would desync: files get reverted from turn
+  N-1, but the conversation message removed is turn N. Worth keeping in mind as
+  a real edge case in this codebase — two consecutive /undos, or one /undo
+  after a turn that made no edits, can misalign which turn's messages vs. files
+  get undone together.
+
+✻ Cooked for 18s · done 8:24 PM
+
+❯ what's in cli/prompt.ts                                                       
+
+  Read 1 file (ctrl+o to expand)
+
+● src/cli/prompt.ts (743 lines) is a hand-rolled raw-mode line editor for the
+  main input prompt — no readline, no inquirer for this part (those are used
+  elsewhere for menus). It replaces the terminal's own line editing entirely by
+  putting stdin in raw mode and manually interpreting every byte sequence. This
+  is what backs the [🚀 Go / ✏️ Other]-style prompt, @file autocomplete,
+  /command palette, image paste badges, and history navigation the README
+  advertises.
+
+  Top-level exports/data:
+  - SLASH_COMMANDS — the canonical list of every /command with its description;
+    also consumed by cli/index.ts for /help presumably.
+  - askPrompt(opts) — the one exported function, returns a Promise<string> that
+    resolves when the user submits. Special sentinel return values: '__CANCEL__'
+    (Ctrl+C) and '__TOGGLE_MODE__:{input}' (Tab with no dropdown open — mode
+    switch, preserving whatever was typed).
+  - GLOBAL_PROMPT_HISTORY: string[] — module-level (not per-call) array, so
+    history persists across multiple askPrompt() calls within one process,
+    merged with PromptHistoryNavigator.loadPersistent() from disk.
+
+  Setup (inside the promise executor):
+  - Prints the prompt header — either the fancy formatPromptHeader mode-border
+    box (if ui.modeBorder) or a simple ◆ message (Tab = MODE) line.
+  - Kicks off two async, fire-and-forget background loads: scanProjectFiles()
+    (populates @mention candidates) and CustomCommandManager.listCommands()
+    (user-defined slash commands) — both populate closures over plain variables
+    (availableFiles, customCommandsList), so autocomplete quality depends on
+    these resolving before the user starts typing @//.
+  - Local editor state: input, cursorPos, selectedIndex (dropdown selection),
+    lastRenderedDropdownLines (for diffing redraws).
+  - imageAttachments / pastedBlocks — large pastes and pasted images get
+    replaced in the visible input by a short badge tag ([Pasted text #3 +40 
+    lines] or [1.png 203kb]) while the real content is tracked separately;
+    expandPastes() substitutes tags back to full content only at submit time.
+    This is exactly the "smart duplicate badges" feature from the README.
+  - Enables raw mode + bracketed-paste mode (\x1b[?2004h) on the terminal so
+    multi-line/large pastes arrive as a single distinguishable chunk instead of
+    being typed character-by-character.
+
+  Tag-aware cursor model — getTagSpans() regex-matches badge tags ([Pasted text 
+  #N +M lines] or [N.png Nkb]) inside input and returns their character ranges.
+  Every cursor-moving/deleting operation (left/right arrow, backspace, delete,
+  even inserting a character) checks these spans and treats a badge as atomic —
+  you can't land the cursor inside one, arrow-key movement jumps over the whole
+  tag in one step, and backspace/delete remove the entire tag at once rather
+  than nibbling into it character-by-character. This is the core trick making
+  paste attachments feel like a single "chip" in the input.
+
+  getDropdownItems() — computes what the autocomplete dropdown should show, two
+  mutually exclusive modes:
+  - If input starts with /: either the fuzzy filterCommandPalette (if
+    ui.commandPalette is on — matches "prompt_palette.ts" you saw in the file
+    list) or a plain startsWith filter, merging built-in SLASH_COMMANDS with
+    custom ones, capped at 15.
+  - Else, looks for an @mention pattern immediately before the cursor (regex
+    allows Cyrillic chars too — \u0400-\u04FF, consistent with the
+    Russian-speaking-user signal from earlier files) and filters availableFiles,
+    capped at 15.
+
+  render() — the most intricate part: a manual terminal-UI redraw using raw ANSI
+  escapes, no external TUI library:
+  - Computes a bounded dropdown box (boxWidth capped at 46 or cols-6,
+    whichever's smaller) specifically to avoid triggering terminal auto-wrap on
+    narrow/mobile screens — this matches the recent commit history you saw
+    ("fix: prevent auto-wrapping on narrow screens", "bulletproof inline 
+    autocomplete", "non-scrolling line allocator") — this file has clearly been
+    iterated on hard for exactly these rendering edge cases.
+  - Paginates the dropdown (pageSize up to 4 visible items) with ▲/▼ scroll
+    indicators baked into the box border when there are more items above/below.
+  - Renders each row split into label + description columns, truncating with …
+    and padding to fixed width, highlighting the selected row via theme.badgeFn.
+  - For the actual input line: if it doesn't fit the terminal width, does
+    horizontal scrolling centered on the cursor (start = cursorPos - 
+    maxInputLen/2, clamped) with … ellipses at either scrolled-off edge, rather
+    than letting the terminal wrap the line.
+  - The dropdown redraw logic (lines 378-398) is careful to never allocate more 
+    terminal lines than necessary and to move the cursor back up (\x1b[NA) after
+    drawing, so repeated re-renders don't cause scroll drift — the
+    "non-scrolling line allocator" from the commit log.
+
+  onData(data) — the raw input dispatcher, handling in order: bracketed-paste
+  start/end markers (buffering between them), a heuristic for "this looks like a
+  paste even without bracketed markers" (length > 80 or contains newlines),
+  then individual keys: Ctrl+D ignored (per recent commit "ignore EOF in
+  prompt"), Ctrl+C resolves '__CANCEL__' after clearing the dropdown, Enter
+  (with special-casing: literal /image command triggers a direct clipboard-image
+  save flow; otherwise accepts the highlighted dropdown item for /commands, or
+  inserts the selection for @mentions rather than submitting), Tab (accepts
+  dropdown item, or if no dropdown is open, resolves the mode-toggle sentinel),
+  Up/Down arrows (dropdown navigation, or history navigation via
+  PromptHistoryNavigator when no dropdown is showing),
+  Left/Right/Home/End/Delete/Backspace all routed through the tag-span-aware
+  logic described above, and a backspace branch that also correctly measures
+  UTF-16 surrogate pairs (emoji) so a single backspace deletes a whole emoji
+  rather than leaving a broken half-surrogate.
+
+  Cleanup/exit paths — cleanup() disables bracketed paste, removes listeners,
+  restores cooked mode; clearBoxAndExit(finalInput) erases the dropdown box from
+  the terminal, expands paste/image tags back to full content, appends to
+  history (deduped against immediate repeat), echoes the final line, and
+  resolves the promise.
+
+  Overall this file is the single most "hand-crafted terminal plumbing" piece of
+  the codebase — worth reading alongside history_search.ts
+  (PromptHistoryNavigator), prompt_palette.ts (fuzzy filter + token badge),
+  clipboard.ts (image save), and modeborder.ts (header formatting), which it
+  composes rather than reimplements.
+
+✻ Crunched for 33s · done 8:25 PM\nclaude --resume cca7cde8-26f3-428d-b177-76ee50b2c49f
