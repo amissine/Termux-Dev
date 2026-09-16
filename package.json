@@ -1,6 +1,6 @@
 {
   "name": "termux-dev",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Ultra-fast, terminal-native AI coding assistant and agent built for Android Termux, Windows, macOS, and Linux.",
   "main": "dist/cli/index.js",
   "type": "module",
@@ -15,7 +15,9 @@
   "files": [
     "bin",
     "dist",
-    "assets"
+    "assets/banner.svg",
+    "assets/preview.svg",
+    "assets/preview.png"
   ],
   "scripts": {
     "build": "tsc && node ./scripts/copy-assets.js",

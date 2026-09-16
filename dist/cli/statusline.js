@@ -65,6 +65,32 @@ export function formatCostBadge(cost, maxCostUSD) {
     }
     return pc.green(costFormatted);
 }
+function clipLabel(label, width) {
+    if (label.length <= width)
+        return label;
+    return width > 1 ? `${label.slice(0, width - 1)}…` : label.slice(0, width);
+}
+export function renderCleanStatus(opts) {
+    const cols = Math.max(20, opts.cols || process.stdout.columns || 80);
+    const available = cols - 2;
+    const mode = opts.isYolo ? 'YOLO' : opts.mode;
+    const modelWidth = Math.max(4, available - mode.length - 2);
+    const shortModel = opts.model.length > modelWidth && opts.model.includes('/')
+        ? opts.model.split('/').pop() || opts.model
+        : opts.model;
+    const model = clipLabel(shortModel, modelWidth);
+    const percent = Math.min(100, Math.round((opts.currentTokens / Math.max(1, opts.maxTokens)) * 100));
+    const contextLabel = cols < 38 ? 'ctx' : 'context';
+    let details = `${contextLabel} ${percent}% · $${opts.cost.toFixed(4)}`;
+    if (details.length > available)
+        details = `${percent}% · $${opts.cost.toFixed(2)}`;
+    const git = GitStatusCache.getStatus();
+    const branch = git ? ` · ${git.branch}${git.isDirty ? '*' : ''}` : '';
+    if (details.length + branch.length <= available)
+        details += branch;
+    details = clipLabel(details, available);
+    return `${pc.cyan(mode.toLowerCase())}  ${pc.bold(model)}\n${pc.dim(details)}`;
+}
 export function renderPowerlineStatus(opts) {
     const cols = opts.cols || process.stdout.columns || 80;
     const theme = getCurrentTheme();

@@ -8,6 +8,7 @@ import { getTools } from '../tools/index.js';
 import { CLIConsoleGuard } from '../permissions/guard.js';
 import { globalSnapshotManager } from '../core/snapshot.js';
 import { UsageTracker } from '../core/usage.js';
+import { MCPManager } from '../mcp/manager.js';
 
 export interface HeadlessOptions {
   planMode?: boolean;
@@ -31,11 +32,6 @@ export async function runHeadlessMode(
   history.updateSystemPrompt(sysPrompt);
   history.addMessage({ role: 'user', content: userPrompt });
 
-  const provider = createProvider(config);
-  const tools = getTools(planMode);
-  const guard = new CLIConsoleGuard(isYolo);
-  const agent = new Agent(config, provider, tools, history, guard);
-
   let executedTools: Array<{ id: string; name: string; result: string }> = [];
   let accumulatedText = '';
   let accumulatedReasoning = '';
@@ -52,6 +48,12 @@ export async function runHeadlessMode(
   });
 
   try {
+    await MCPManager.getInstance().init();
+    const provider = createProvider(config);
+    const tools = getTools(planMode);
+    const guard = new CLIConsoleGuard(isYolo);
+    const agent = new Agent(config, provider, tools, history, guard);
+
     if (!isQuiet && !isJson) {
       console.log(pc.bold(pc.cyan(`⚡ devx v${DEVX_VERSION} (headless) | ${planMode ? 'PLAN' : 'AGENT'} | ${config.model}`)));
       console.log(pc.dim(`Task: ${userPrompt}\n`));
@@ -121,5 +123,6 @@ export async function runHeadlessMode(
     return 1;
   } finally {
     globalSnapshotManager.finishTurn();
+    MCPManager.getInstance().stopAll();
   }
 }

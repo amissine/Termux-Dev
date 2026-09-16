@@ -1,10 +1,14 @@
 import pc from 'picocolors';
 import { getCurrentTheme } from './theme.js';
-export function renderBannerLines(mode = 'full', version = '1.5.0', cols = 80) {
+import { DEVX_VERSION } from '../core/types.js';
+export function renderBannerLines(mode = 'full', version = DEVX_VERSION, cols = 80) {
     if (mode === 'off') {
         return [];
     }
     const theme = getCurrentTheme();
+    if (mode === 'clean') {
+        return [pc.bold('devx') + pc.dim(`  v${version}`)];
+    }
     if (mode === 'minimal') {
         return [
             theme.colorFn('⚡ ') + theme.boldFn('TERMUX·DEV') + ' ' + pc.dim(`v${version}`) + pc.dim(' · Type /help for commands')
@@ -29,7 +33,7 @@ export function renderBannerLines(mode = 'full', version = '1.5.0', cols = 80) {
         indent + theme.boldFn(`v${version}`)
     ];
 }
-export function drawBanner(mode = 'full', version = '1.5.0', cols = 80) {
+export function drawBanner(mode = 'full', version = DEVX_VERSION, cols = 80) {
     const lines = renderBannerLines(mode, version, cols);
     if (lines.length > 0) {
         console.log();

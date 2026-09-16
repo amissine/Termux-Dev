@@ -20,6 +20,9 @@ describe('Prompt Palette & Token Counter', () => {
     const matchDesc = filterCommandPalette('revert', commands);
     expect(matchDesc).toHaveLength(1);
     expect(matchDesc[0].cmd).toBe('/undo');
+
+    const helpFirst = filterCommandPalette('/h', commands);
+    expect(helpFirst[0].cmd).toBe('/help');
   });
 
   it('estimates prompt tokens and formats badge', () => {
