@@ -7,6 +7,12 @@ export function filterCommandPalette(query, commands) {
     return commands.filter((c) => {
         const name = c.cmd.toLowerCase().replace(/^\//, '');
         return name.includes(q) || c.desc.toLowerCase().includes(q);
+    }).sort((a, b) => {
+        const rank = (cmd) => {
+            const name = cmd.toLowerCase().replace(/^\//, '');
+            return name.startsWith(q) ? 0 : name.includes(q) ? 1 : 2;
+        };
+        return rank(a.cmd) - rank(b.cmd);
     });
 }
 export function estimatePromptTokens(text) {

@@ -20,13 +20,15 @@ Built specifically for **Android Termux**, **Windows**, **macOS**, and **Linux**
 
 <br/><br/>
 
-<img src="assets/preview.png" alt="devx Terminal Interface" width="750" style="border-radius: 8px;" />
+<img src="assets/preview.svg" alt="devx Terminal Interface" width="750" style="border-radius: 8px;" />
 
 </div>
 
 ---
 
 ## 🌟 Highlights
+
+The terminal interface uses a compact layout on both desktop and Termux. Switch to the original ASCII layout in `/settings` → `Interface`.
 
 - **🧠 Dual-Brain Architecture (PLAN & AGENT Modes):**  
   Instantly toggle between **PLAN** (safe architect, interactive requirements questionnaire, no code dumps) and **AGENT** (autonomous file edits, terminal commands, auto-installer).
@@ -155,7 +157,7 @@ Type `/` in the prompt to open the autocomplete command palette:
 | **`/model`** | Switch model for the active provider with live search |
 | **`/provider`** | Switch provider (OpenRouter, Gemini, Groq, DeepSeek, Local) |
 | **`/compact`** | Compact and summarize chat context tokens |
-| **`/clear`** | Clear screen and redraw banner |
+| **`/clear`** | Clear screen without deleting conversation history |
 | **`/init`** | Generate `AGENTS.md` developer guide in project root |
 | **`/help`** | Display all available commands |
 | **`/exit`** | Exit devx cleanly |
@@ -181,6 +183,8 @@ If you find **devx** useful, please consider giving it a ⭐️ star on [GitHub]
 <br/>
 
 # 🇷🇺 Русский
+
+Компактный интерфейс используется по умолчанию и на ПК, и в Termux. Исходный ASCII-вариант можно включить в `/settings` → `Interface`.
 
 ## 🌟 Главные возможности
 
@@ -311,7 +315,7 @@ devx
 | **`/model`** | Сменить модель текущего провайдера с живым поиском |
 | **`/provider`** | Сменить AI-провайдера (OpenRouter, Gemini, Groq, DeepSeek, Local) |
 | **`/compact`** | Сжать контекст диалога для экономии токенов |
-| **`/clear`** | Очистить экран терминала и перерисовать баннер |
+| **`/clear`** | Очистить экран терминала, сохранив историю диалога |
 | **`/init`** | Создать файл инструкций `AGENTS.md` в корне проекта |
 | **`/help`** | Показать список всех доступных команд |
 | **`/exit`** | Завершить работу devx |

@@ -1,11 +1,12 @@
 import pc from 'picocolors';
 import { getCurrentTheme } from './theme.js';
+import { DEVX_VERSION } from '../core/types.js';
 
-export type BannerMode = 'full' | 'minimal' | 'off';
+export type BannerMode = 'clean' | 'full' | 'minimal' | 'off';
 
 export function renderBannerLines(
   mode: BannerMode = 'full',
-  version: string = '1.5.0',
+  version: string = DEVX_VERSION,
   cols: number = 80
 ): string[] {
   if (mode === 'off') {
@@ -13,6 +14,10 @@ export function renderBannerLines(
   }
 
   const theme = getCurrentTheme();
+
+  if (mode === 'clean') {
+    return [pc.bold('devx') + pc.dim(`  v${version}`)];
+  }
 
   if (mode === 'minimal') {
     return [
@@ -43,7 +48,7 @@ export function renderBannerLines(
 
 export function drawBanner(
   mode: BannerMode = 'full',
-  version: string = '1.5.0',
+  version: string = DEVX_VERSION,
   cols: number = 80
 ): void {
   const lines = renderBannerLines(mode, version, cols);

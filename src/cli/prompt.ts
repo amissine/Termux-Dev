@@ -33,7 +33,7 @@ export const SLASH_COMMANDS = [
   { cmd: '/commit', desc: 'AI-generated git commit message & commit' },
   { cmd: '/status', desc: 'Show git repository file status' },
   { cmd: '/compact', desc: 'Compact & summarize chat context' },
-  { cmd: '/clear', desc: 'Clear screen & redraw banner' },
+  { cmd: '/clear', desc: 'Clear screen' },
   { cmd: '/init', desc: 'Generate AGENTS.md project instructions' },
   { cmd: '/config', desc: 'View current configuration' },
   { cmd: '/help', desc: 'Show all available commands' },
@@ -73,14 +73,19 @@ function stripAnsi(str: string): string {
 export function askPrompt(opts: AskPromptOptions = {}): Promise<string> {
   return new Promise((resolve) => {
     const theme = getCurrentTheme();
-    if (opts.ui?.modeBorder) {
-      const header = formatPromptHeader(!!opts.planMode, !!opts.isYolo, opts.message);
-      console.log(header);
-    } else {
-      const msg = opts.message
-        ? `${opts.message} ${pc.dim(`(Tab = ${opts.planMode ? 'AGENT' : 'PLAN'})`)}`
-        : `Ask anything... ${pc.dim(`(Tab = ${opts.planMode ? 'AGENT' : 'PLAN'})`)}`;
-      console.log(theme.colorFn('◆') + '  ' + pc.bold(msg));
+    const cleanLayout = opts.ui?.layout !== 'classic';
+    const promptPrefix = cleanLayout ? pc.cyan('›') + ' ' : pc.dim('│') + '  ';
+    const promptPrefixWidth = cleanLayout ? 2 : 3;
+    if (!cleanLayout) {
+      if (opts.ui?.modeBorder) {
+        const header = formatPromptHeader(!!opts.planMode, !!opts.isYolo, opts.message);
+        console.log(header);
+      } else {
+        const msg = opts.message
+          ? `${opts.message} ${pc.dim(`(Tab = ${opts.planMode ? 'AGENT' : 'PLAN'})`)}`
+          : `Ask anything... ${pc.dim(`(Tab = ${opts.planMode ? 'AGENT' : 'PLAN'})`)}`;
+        console.log(theme.colorFn('◆') + '  ' + pc.bold(msg));
+      }
     }
 
     let availableFiles: string[] = [];
@@ -140,7 +145,7 @@ export function askPrompt(opts: AskPromptOptions = {}): Promise<string> {
     function formatInputWithBadges(str: string): string {
       return str.replace(
         /(\[(?:Pasted text #\d+ \+\d+ lines|\d+\.png \d+kb)\])/g,
-        (match) => theme.badgeFn(` ${match.slice(1, -1)} `) + '\x1b[0m'
+        (match) => (cleanLayout ? pc.dim(match) : theme.badgeFn(` ${match.slice(1, -1)} `)) + '\x1b[0m'
       );
     }
 
@@ -198,7 +203,7 @@ export function askPrompt(opts: AskPromptOptions = {}): Promise<string> {
     function getDropdownItems(): DropdownItem[] {
       if (input.startsWith('/')) {
         const q = input.trim().toLowerCase();
-        if (opts.ui?.commandPalette) {
+        if (cleanLayout || opts.ui?.commandPalette) {
           const baseList = [
             ...SLASH_COMMANDS.map((c) => ({ cmd: c.cmd, desc: c.desc })),
             ...customCommandsList.map((c) => ({ cmd: c.cmd, desc: `(custom) ${c.desc}` }))
@@ -269,8 +274,6 @@ export function askPrompt(opts: AskPromptOptions = {}): Promise<string> {
         const maxDropdownRows = Math.max(2, Math.min(rows - 3, 5));
         const pageSize = Math.min(4, Math.max(2, Math.min(maxDropdownRows - 2, Math.floor(rows / 4))));
         
-        // Strict boundary: left margin (2) + box borders (2) + inner width <= cols - 4
-        // This mathematically prevents terminal auto-wrapping on narrow mobile screens
         const boxWidth = Math.max(12, Math.min(cols - 6, 46));
         const innerWidth = Math.max(8, boxWidth - 2);
         const total = items.length;
@@ -283,83 +286,96 @@ export function askPrompt(opts: AskPromptOptions = {}): Promise<string> {
         }
         const endIndex = Math.min(startIndex + pageSize, total);
 
-        const hasMoreUp = startIndex > 0;
-        const hasMoreDown = endIndex < total;
+        if (cleanLayout) {
+          for (let i = startIndex; i < endIndex; i++) {
+            const item = items[i];
+            const selected = i === selectedIndex;
+            const labelWidth = Math.min(20, cols - 5);
+            const label = item.label.length > labelWidth ? `${item.label.slice(0, labelWidth - 1)}…` : item.label;
+            const descWidth = cols - label.length - 7;
+            const desc = descWidth >= 5
+              ? item.desc.slice(0, descWidth)
+              : '';
+            dropdownLines.push(`  ${selected ? pc.cyan('›') : ' '} ${selected ? pc.bold(label) : label}${desc ? `  ${pc.dim(desc)}` : ''}`);
+          }
+        } else {
+          const hasMoreUp = startIndex > 0;
+          const hasMoreDown = endIndex < total;
 
-        let topBorderStr = '─'.repeat(innerWidth);
-        if (hasMoreUp) {
-          const mid = Math.max(0, Math.floor(innerWidth / 2) - 2);
-          topBorderStr = '─'.repeat(mid) + ' ▲ ' + '─'.repeat(Math.max(0, innerWidth - mid - 3));
-        }
-
-        let botBorderStr = '─'.repeat(innerWidth);
-        if (hasMoreDown) {
-          const mid = Math.max(0, Math.floor(innerWidth / 2) - 2);
-          botBorderStr = '─'.repeat(mid) + ' ▼ ' + '─'.repeat(Math.max(0, innerWidth - mid - 3));
-        }
-
-        dropdownLines.push(pc.dim('│ ') + pc.dim('╭' + topBorderStr + '╮') + '\x1b[0m');
-
-        for (let i = startIndex; i < endIndex; i++) {
-          const item = items[i];
-          const isSelected = i === selectedIndex;
-          const pointer = isSelected ? '› ' : '  ';
-          const avail = Math.max(4, innerWidth - pointer.length);
-
-          let rowText = '';
-          if (avail < 16) {
-            const labelStr =
-              item.label.length > avail
-                ? item.label.slice(0, avail - 1) + '…'
-                : item.label.padEnd(avail, ' ');
-            rowText = pointer + (isSelected ? theme.boldFn(labelStr) : labelStr);
-          } else {
-            const labelMax = Math.min(12, Math.max(6, Math.floor(avail * 0.38)));
-            const labelStr =
-              item.label.length > labelMax
-                ? item.label.slice(0, labelMax - 1) + '…'
-                : item.label.padEnd(labelMax, ' ');
-            const descMax = Math.max(3, avail - labelMax - 1);
-            const descStr =
-              item.desc.length > descMax
-                ? item.desc.slice(0, descMax - 1) + '…'
-                : item.desc.padEnd(descMax, ' ');
-            rowText = pointer + (isSelected ? theme.boldFn(labelStr) : labelStr) + ' ' + pc.gray(descStr);
+          let topBorderStr = '─'.repeat(innerWidth);
+          if (hasMoreUp) {
+            const mid = Math.max(0, Math.floor(innerWidth / 2) - 2);
+            topBorderStr = '─'.repeat(mid) + ' ▲ ' + '─'.repeat(Math.max(0, innerWidth - mid - 3));
           }
 
-          // Calculate visible plain length without ANSI
-          const plainLen = rowText.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').length;
-          const padCount = Math.max(0, innerWidth - plainLen);
-          const fullRow = rowText + ' '.repeat(padCount);
-
-          if (isSelected) {
-            const cleanFull = fullRow.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
-            dropdownLines.push(pc.dim('│ ') + pc.dim('│') + theme.badgeFn(cleanFull) + pc.dim('│') + '\x1b[0m');
-          } else {
-            dropdownLines.push(pc.dim('│ ') + pc.dim('│') + fullRow + pc.dim('│') + '\x1b[0m');
+          let botBorderStr = '─'.repeat(innerWidth);
+          if (hasMoreDown) {
+            const mid = Math.max(0, Math.floor(innerWidth / 2) - 2);
+            botBorderStr = '─'.repeat(mid) + ' ▼ ' + '─'.repeat(Math.max(0, innerWidth - mid - 3));
           }
-        }
 
-        dropdownLines.push(pc.dim('│ ') + pc.dim('╰' + botBorderStr + '╯') + '\x1b[0m');
+          dropdownLines.push(pc.dim('│ ') + pc.dim('╭' + topBorderStr + '╮') + '\x1b[0m');
+
+          for (let i = startIndex; i < endIndex; i++) {
+            const item = items[i];
+            const isSelected = i === selectedIndex;
+            const pointer = isSelected ? '› ' : '  ';
+            const avail = Math.max(4, innerWidth - pointer.length);
+
+            let rowText = '';
+            if (avail < 16) {
+              const labelStr =
+                item.label.length > avail
+                  ? item.label.slice(0, avail - 1) + '…'
+                  : item.label.padEnd(avail, ' ');
+              rowText = pointer + (isSelected ? theme.boldFn(labelStr) : labelStr);
+            } else {
+              const labelMax = Math.min(12, Math.max(6, Math.floor(avail * 0.38)));
+              const labelStr =
+                item.label.length > labelMax
+                  ? item.label.slice(0, labelMax - 1) + '…'
+                  : item.label.padEnd(labelMax, ' ');
+              const descMax = Math.max(3, avail - labelMax - 1);
+              const descStr =
+                item.desc.length > descMax
+                  ? item.desc.slice(0, descMax - 1) + '…'
+                  : item.desc.padEnd(descMax, ' ');
+              rowText = pointer + (isSelected ? theme.boldFn(labelStr) : labelStr) + ' ' + pc.gray(descStr);
+            }
+
+            const plainLen = rowText.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').length;
+            const padCount = Math.max(0, innerWidth - plainLen);
+            const fullRow = rowText + ' '.repeat(padCount);
+
+            if (isSelected) {
+              const cleanFull = fullRow.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+              dropdownLines.push(pc.dim('│ ') + pc.dim('│') + theme.badgeFn(cleanFull) + pc.dim('│') + '\x1b[0m');
+            } else {
+              dropdownLines.push(pc.dim('│ ') + pc.dim('│') + fullRow + pc.dim('│') + '\x1b[0m');
+            }
+          }
+
+          dropdownLines.push(pc.dim('│ ') + pc.dim('╰' + botBorderStr + '╯') + '\x1b[0m');
+        }
       }
 
       // 1. Format and write the Prompt line safely
-      let inputDisplay = pc.dim('│') + '  ';
-      let renderCursorCol = 3;
+      let inputDisplay = promptPrefix;
+      let renderCursorCol = promptPrefixWidth;
 
       if (input.length === 0) {
-        const maxPlace = Math.max(10, cols - 6);
+        const maxPlace = Math.max(10, cols - promptPrefixWidth - 2);
         const displayPlace =
           placeholder.length > maxPlace ? placeholder.slice(0, maxPlace - 1) + '…' : placeholder;
         inputDisplay += pc.dim(displayPlace) + '\x1b[0m';
-        renderCursorCol = 3;
+        renderCursorCol = promptPrefixWidth;
       } else {
-        const tokenBadge = opts.ui?.inputTokenCounter ? formatPromptTokenBadge(estimatePromptTokens(input), 40) : '';
+        const tokenBadge = !cleanLayout && opts.ui?.inputTokenCounter ? formatPromptTokenBadge(estimatePromptTokens(input), 40) : '';
         const badgeSuffix = tokenBadge ? ` ${tokenBadge}` : '';
-        const maxInputLen = Math.max(10, cols - 6 - (tokenBadge ? 12 : 0));
+        const maxInputLen = Math.max(10, cols - promptPrefixWidth - 3 - (tokenBadge ? 12 : 0));
         if (input.length <= maxInputLen) {
           inputDisplay += formatInputWithBadges(input) + badgeSuffix + '\x1b[0m';
-          renderCursorCol = 3 + cursorPos;
+          renderCursorCol = promptPrefixWidth + cursorPos;
         } else {
           // Horizontal scrolling to prevent auto-wrapping
           const start = Math.max(0, Math.min(cursorPos - Math.floor(maxInputLen / 2), input.length - maxInputLen));
@@ -367,7 +383,7 @@ export function askPrompt(opts: AskPromptOptions = {}): Promise<string> {
           const prefix = start > 0 ? '…' : '';
           const suffix = start + maxInputLen < input.length ? '…' : '';
           inputDisplay += pc.dim(prefix) + formatInputWithBadges(visibleChunk) + pc.dim(suffix) + badgeSuffix + '\x1b[0m';
-          renderCursorCol = 3 + (prefix ? 1 : 0) + (cursorPos - start);
+          renderCursorCol = promptPrefixWidth + (prefix ? 1 : 0) + (cursorPos - start);
         }
       }
 
@@ -435,7 +451,7 @@ export function askPrompt(opts: AskPromptOptions = {}): Promise<string> {
         }
       }
 
-      process.stdout.write(`\x1b[0m\r\x1b[2K${pc.dim('│')}  ${formatInputWithBadges(finalInput)}\x1b[0m\n\n`);
+      process.stdout.write(`\x1b[0m\r\x1b[2K${promptPrefix}${formatInputWithBadges(finalInput)}\x1b[0m\n\n`);
       cleanup();
       resolve(fullText);
     }

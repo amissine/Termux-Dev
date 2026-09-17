@@ -13,6 +13,12 @@ export function filterCommandPalette(query: string, commands: CommandItem[]): Co
   return commands.filter((c) => {
     const name = c.cmd.toLowerCase().replace(/^\//, '');
     return name.includes(q) || c.desc.toLowerCase().includes(q);
+  }).sort((a, b) => {
+    const rank = (cmd: string) => {
+      const name = cmd.toLowerCase().replace(/^\//, '');
+      return name.startsWith(q) ? 0 : name.includes(q) ? 1 : 2;
+    };
+    return rank(a.cmd) - rank(b.cmd);
   });
 }
 

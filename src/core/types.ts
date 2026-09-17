@@ -1,4 +1,4 @@
-export const DEVX_VERSION = '1.5.0';
+export const DEVX_VERSION = '1.6.0';
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -66,6 +66,7 @@ export interface LLMProvider {
 }
 
 export interface UIConfig {
+  layout?: 'clean' | 'classic';
   liveTelemetry?: boolean;
   powerlineStatus?: boolean;
   modeBorder?: boolean;
@@ -75,7 +76,7 @@ export interface UIConfig {
   promptHistoryFuzzy?: boolean;
 }
 
-export type BannerMode = 'full' | 'minimal' | 'off';
+export type BannerMode = 'clean' | 'full' | 'minimal' | 'off';
 
 export interface AgentConfig {
   maxContextTokens: number;

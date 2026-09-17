@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderProgressBar, formatCostBadge, renderPowerlineStatus, GitStatusCache } from '../../src/cli/statusline.js';
+import { renderProgressBar, formatCostBadge, renderCleanStatus, renderPowerlineStatus, GitStatusCache } from '../../src/cli/statusline.js';
 
 describe('Statusline & Powerline', () => {
   it('renders progress bar with correct filled percentage', () => {
@@ -56,6 +56,24 @@ describe('Statusline & Powerline', () => {
     });
     expect(mobile).toContain('PLAN');
     expect(mobile).toContain('\n'); // 2-line layout on narrow screen
+  });
+
+  it('keeps the clean status within narrow terminal widths', () => {
+    for (const cols of [28, 35, 80]) {
+      const output = renderCleanStatus({
+        mode: 'AGENT',
+        model: 'nvidia/nemotron-3.5-lightning:free',
+        currentTokens: 100000,
+        maxTokens: 1000000,
+        cost: 0,
+        cols
+      });
+      const lines = output.split('\n').map(line => line.replace(/\x1b\[[0-9;]*m/g, ''));
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toContain('agent');
+      expect(lines[1]).toContain('10%');
+      expect(lines.every(line => line.length <= cols - 2)).toBe(true);
+    }
   });
 
   it('handles GitStatusCache invalidation cleanly', () => {

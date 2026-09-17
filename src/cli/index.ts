@@ -35,7 +35,7 @@ import { UsageTracker } from '../core/usage.js';
 import { SessionExporter } from './export.js';
 import { MCPManager } from '../mcp/manager.js';
 import { LiveTelemetryTracker } from './telemetry.js';
-import { renderPowerlineStatus, GitStatusCache } from './statusline.js';
+import { renderCleanStatus, renderPowerlineStatus, GitStatusCache } from './statusline.js';
 import { formatDiffBox } from './diff.js';
 import { drawBanner, BannerMode } from './banner.js';
 import { getModeIndicator, formatPromptHeader } from './modeborder.js';
@@ -530,11 +530,11 @@ function formatToolGeneratingLabel(name: string, targetHint?: string): string {
   return `→ ${name}${target}...`;
 }
 
-async function handleSessionDelete() {
+async function handleSessionDelete(bannerMode: BannerMode) {
   while (true) {
     const sessions = await SessionManager.listSessions();
     if (sessions.length === 0) {
-      drawLogo();
+      drawLogo(bannerMode);
       p.log.warn('No saved sessions found.');
       break;
     }
@@ -569,7 +569,7 @@ async function handleSessionDelete() {
     }
 
     if (!chosenSessionId || chosenSessionId === '__cancel__') {
-      drawLogo();
+      drawLogo(bannerMode);
       p.log.info('Session deletion finished.');
       break;
     }
@@ -581,7 +581,7 @@ async function handleSessionDelete() {
       });
       if (!p.isCancel(confirmAll) && confirmAll) {
         const count = await SessionManager.deleteAllSessions();
-        drawLogo();
+        drawLogo(bannerMode);
         p.log.success(`Deleted all ${count} sessions.`);
         break;
       }
@@ -591,7 +591,7 @@ async function handleSessionDelete() {
     const target = sessions.find(s => s.id === chosenSessionId);
     const title = target ? target.title : chosenSessionId;
     const ok = await SessionManager.deleteSession(chosenSessionId);
-    drawLogo();
+    drawLogo(bannerMode);
     if (ok) {
       p.log.success(`Deleted session: "${title}"`);
     } else {
@@ -618,7 +618,7 @@ async function handleThemeSelect(config: any): Promise<void> {
       config.theme = selected;
       await saveConfig(config);
       const th = setActiveTheme(selected);
-      drawLogo();
+      drawLogo(config.banner || 'full');
       p.log.success(th.boldFn(`🎨 Theme switched to ${th.emoji} ${th.name}!`));
     }
   } catch {}
@@ -638,6 +638,11 @@ async function handleSettings(config: any): Promise<any> {
             name: `🎨 Color Theme: ${currentTh.emoji} ${currentTh.name}`,
             value: 'change_theme',
             description: `Switch UI accent colors (${currentTh.desc})`
+          },
+          {
+            name: `Interface: ${config.ui?.layout === 'classic' ? 'Classic' : 'Clean'}`,
+            value: 'toggle_layout',
+            description: 'Switch between the compact layout and the original terminal UI'
           },
           {
             name: `${config.pureBlackTheme !== false ? pc.green('🖤 Pure Black Background: ON') : pc.yellow('🖤 Pure Black Background: OFF')}`,
@@ -690,6 +695,15 @@ async function handleSettings(config: any): Promise<any> {
         continue;
       }
 
+      if (choice === 'toggle_layout') {
+        config.ui = config.ui || {};
+        config.ui.layout = config.ui.layout === 'classic' ? 'clean' : 'classic';
+        config.banner = config.ui.layout === 'clean' ? 'clean' : 'full';
+        await saveConfig(config);
+        drawLogo(config.banner);
+        continue;
+      }
+
       if (choice === 'about') {
         p.note(
           `⚡ devx v${DEVX_VERSION} — Terminal-Native AI Coding Agent\n` +
@@ -711,7 +725,7 @@ async function handleSettings(config: any): Promise<any> {
         } else {
           resetTerminalTheme();
         }
-        drawLogo();
+        drawLogo(config.banner || 'full');
         p.log.success(`Pure Black background: ${config.pureBlackTheme ? pc.bold(pc.green('ON (Deep Black)')) : pc.bold(pc.yellow('OFF (System Default)'))}`);
         continue;
       }
@@ -813,6 +827,9 @@ export async function main() {
   const isHeadless = !!options.prompt;
 
   let config = await loadConfig(!isHeadless);
+  config.banner = config.ui?.layout === 'classic'
+    ? config.banner || 'full'
+    : config.banner === 'off' ? 'off' : 'clean';
 
   if (options.model) {
     config.model = options.model;
@@ -908,7 +925,17 @@ export async function main() {
     const modeName = planMode ? 'PLAN' : 'AGENT';
     const theme = getCurrentTheme();
 
-    if (config.ui?.powerlineStatus) {
+    if (config.ui?.layout !== 'classic') {
+      console.log(renderCleanStatus({
+        mode: modeName as 'PLAN' | 'AGENT',
+        model: config.model,
+        currentTokens,
+        maxTokens,
+        cost: totalSessionCost,
+        cols,
+        isYolo: !!config.autoApprove
+      }) + '\n');
+    } else if (config.ui?.powerlineStatus) {
       const statusLine = renderPowerlineStatus({
         mode: modeName as 'PLAN' | 'AGENT',
         model: config.model,
@@ -947,11 +974,15 @@ export async function main() {
     if (autoTriggerPrompt) {
       answer = autoTriggerPrompt;
       autoTriggerPrompt = '';
-      console.log(theme.colorFn('◆') + '  ' + pc.bold(pc.white(answer)));
+      console.log(config.ui?.layout === 'classic'
+        ? theme.colorFn('◆') + '  ' + pc.bold(pc.white(answer))
+        : pc.cyan('›') + ' ' + answer);
     } else {
       const inputStr = await askPrompt({
         message: 'Ask anything...',
-        placeholder: 'Fix a TODO, type /help, or press Tab to switch mode',
+        placeholder: config.ui?.layout === 'classic'
+          ? 'Fix a TODO, type /help, or press Tab to switch mode'
+          : 'Ask or describe a task…',
         initialValue: currentDraft,
         planMode,
         isYolo: !!config.autoApprove,
@@ -1066,7 +1097,7 @@ export async function main() {
               continue;
             }
             if (picked === '/session del') {
-              await handleSessionDelete();
+              await handleSessionDelete(config.banner || 'full');
               continue;
             }
             cmd = picked;
@@ -1078,7 +1109,7 @@ export async function main() {
 
       if (cmd === '/settings') {
         config = await handleSettings(config);
-        drawLogo();
+        drawLogo(config.banner || 'full');
         continue;
       }
 
@@ -1111,9 +1142,7 @@ export async function main() {
         break;
       }
       if (cmd === '/clear') {
-        history.clear();
-        history.addMessage({ role: 'system', content: await buildSystemPrompt(planMode) });
-        p.log.success('History cleared.');
+        drawLogo(config.banner || 'full');
         continue;
       }
       if (cmd === '/new' || cmd === '/reset') {
@@ -1121,7 +1150,7 @@ export async function main() {
         history = new History();
         history.addMessage({ role: 'system', content: await buildSystemPrompt(planMode) });
         totalSessionCost = 0;
-        drawLogo();
+        drawLogo(config.banner || 'full');
         const initialPrompt = parts.slice(1).join(' ').trim();
         if (initialPrompt) {
           p.log.success('Started new session with prompt.');
@@ -1133,7 +1162,7 @@ export async function main() {
       } else if (cmd === '/session' || cmd === '/sessions' || cmd === '/resume' || cmd === '/history') {
         const sub = (parts[1] || '').toLowerCase();
         if (sub === 'del' || sub === 'delete' || sub === 'rm') {
-          await handleSessionDelete();
+          await handleSessionDelete(config.banner || 'full');
           continue;
         }
 
@@ -1177,7 +1206,7 @@ export async function main() {
         }
 
         if (chosenSessionId === '__delete_mode__') {
-          await handleSessionDelete();
+          await handleSessionDelete(config.banner || 'full');
           continue;
         }
 
@@ -1196,7 +1225,7 @@ export async function main() {
             planMode = loaded.planMode;
           }
           totalSessionCost = loaded.totalCost || 0;
-          drawLogo();
+          drawLogo(config.banner || 'full');
 
           const nonSysMessages = loaded.messages.filter(m => m.role !== 'system');
           const totalMsgs = nonSysMessages.length;
@@ -1250,7 +1279,7 @@ export async function main() {
         planMode = true;
         const newSys = await buildSystemPrompt(true);
         history.updateSystemPrompt(newSys);
-        drawLogo();
+        drawLogo(config.banner || 'full');
         p.log.success(pc.cyan('Switched to PLAN mode (Architect & Planner). Modifying tools are disabled.'));
         continue;
       }
@@ -1258,7 +1287,7 @@ export async function main() {
         planMode = false;
         const newSys = await buildSystemPrompt(false);
         history.updateSystemPrompt(newSys);
-        drawLogo();
+        drawLogo(config.banner || 'full');
         p.log.success(pc.green('Switched to AGENT mode (Coder & Executor). Full tools enabled.'));
         continue;
       }
@@ -1412,11 +1441,6 @@ export async function main() {
         }
         continue;
       }
-      if (cmd === '/clear') {
-        console.clear();
-        drawLogo();
-        continue;
-      }
       if (cmd === '/session' && parts[1]?.toLowerCase() !== 'del') {
         const cur = sessionManager.getSession();
         const nonSys = history.getMessages().filter(m => m.role !== 'system');
@@ -1474,7 +1498,7 @@ export async function main() {
             config.theme = matched.id;
             await saveConfig(config);
             const th = setActiveTheme(matched.id);
-            drawLogo();
+            drawLogo(config.banner || 'full');
             p.log.success(th.boldFn(`🎨 Theme switched to ${th.emoji} ${th.name}!`));
           } else {
             const themes = listThemes();
@@ -1551,7 +1575,7 @@ export async function main() {
       }
       if (cmd === '/model') {
         const res = await selectModel(config.baseUrl, config.apiKey, config.model, config.provider || '', true);
-        drawLogo();
+        drawLogo(config.banner || 'full');
         if (res) {
           config.model = res.model;
           config.maxContextTokens = res.contextLimit;
@@ -1564,7 +1588,7 @@ export async function main() {
       }
       if (cmd === '/provider' || cmd === '/providers') {
         const newConfig = await selectProvider(config, true);
-        drawLogo();
+        drawLogo(config.banner || 'full');
         if (newConfig) {
           config = newConfig;
           p.log.success(`Switched provider to: ${pc.bold(config.provider || 'custom')} (${config.model})`);
